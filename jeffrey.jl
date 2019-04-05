@@ -1,57 +1,39 @@
 using Statistics, Distributions
-using DataFrames, Combinatorics, KernelDensity, Dierckx
+using DataFrames, Combinatorics, KernelDensity
 import CSV, Plots
 
 bids = CSV.File("FPSB_data.csv") |> DataFrame |> Matrix{Float64}
+v_range = 50:300
 
 function Q1()
-    Fb(bid_vec) = mean([all(row .<= bid_vec) for row=eachrow(bids)])
-    quantiles = [quantile(bids[:,col], p) for p=[.25,.75], col=1:3]
-    cases = [reverse(case) for case=vec(collect(Iterators.product(fill([1,2],3)...)))]
-    [Fb(quantiles) for quantiles=[quantiles[CartesianIndex.(case,1:3)] for case=cases]]
+    Fb(bid_vec) = mean(all(bids .<= collect(bid_vec)', dims=2))
+    Fb.(Iterators.product([quantile.(Ref(bids[:,col]), [.25,.75]) for col=1:3]...))
 end
 
 function Q2()
-    m_i(i) = maximum(bids[:,i.!=1:3], dims=2)[:,1]
-    u = zeros(1000,3)
+    f_est = zeros(length(v_range),3)
     for i=1:3
-        function G_hat_i(bid)
-            m_i_mask = m_i(i) .<= bid
-            sum(m_i_mask) < 3 && (return 0)
-            mean(m_i_mask)*pdf(kde(bids[:,i][m_i_mask]), bid)
-        end
-        g_hat_kde = kde((bids[:,i], m_i(i)), bandwidth=(5,5))
-        g_hat_i(bid) = pdf(g_hat_kde, bid, bid)
-        u[:,i] = bids[:,i] + G_hat_i.(bids[:,i])./g_hat_i.(bids[:,i])
+        m_i = maximum(bids[:,i.!=1:3], dims=2)[:,1]
+        G_hat(bid) = (mask=m_i.<=bid; sum(mask)<3 ? 0 : mean(mask)*pdf(kde(bids[:,i][mask]), bid))
+        g_kd = InterpKDE(kde((bids[:,i], m_i), kernel=Triweight))
+        u = bids[:,i] + G_hat.(bids[:,i])./pdf.(Ref(g_kd), bids[:,i], bids[:,i])
+        # I trim crazy and NaN values caused by tiny estimates of g and by G=g=0
+        f_est[:,i] = pdf(kde(u[.!isnan.(u) .& (abs.(u) .<= 500)]), v_range)
     end
-    f_kde_vec = [kde(u[:,i][(.!isnan.(u[:,i]))]) for i=1:3]
-    f(bid, i) = pdf(f_kde_vec[i], bid)
-    Plots.plot(50:.1:300, [f(50:.1:300, i) for i=1:3], xlabel="bid", ylabel="f", label=[1,2,3], title="Affiliated Private Values")
+    Plots.plot(v_range, f_est, xlabel="bid", ylabel="f", label=[1,2,3], title="Affiliated Private Values")
 end
 
 function Q3()
-    Fb_j(bid, j) = mean(bids[:,j] .<= bid)
-    u = zeros(1000,3)
+    f_est = zeros(length(v_range),3)
     for i=1:3
-        Gb_i(bid) = prod([Fb_j(bid, j) for j=(1:3)[i.!=1:3]])
-        m_samp = maximum(hcat([sample(bids[:,j],50000) for j=(1:3)[i!=1:3]]...), dims=2)[:,1]
-        gb_kde = kde(m_samp)
-        u[:,i] = bids[:,i] + Gb_i.(bids[:,i])./pdf(gb_kde, bids[:,i])
+        Gb_i(bid) = prod(mean(bids[:,i.!=1:3] .<= bid, dims=1))
+        gb_kd = kde(max.([sample(bids[:,j],500000) for j=findall(i.!=1:3)]...), kernel=Triweight)
+        u = bids[:,i] + Gb_i.(bids[:,i])./pdf(gb_kd, bids[:,i])
+        # I trim NaN values caused by G=g=0
+        f_est[:,i] = pdf(kde(u[.!isnan.(u)]), v_range)
     end
-    f(bid, i) = pdf(kde(u[:,i][.!isnan.(u[:,i])]), bid)
-    Plots.plot(0:300, [f(0:300, i) for i=1:3], xlabel="bid", ylabel="f", label=[1,2,3], title="Independent Private Values")
-end
-
-function Q3_alt()
-    m_i(i) = maximum(bids[:,i.!=1:3], dims=2)[:,1]
-    Gb_i(bid, i) = mean(m_i(i) .<= bid)
-    kde_vec = [kde(m_i(i)) for i=1:3]
-    g(bid, i) = pdf(kde_vec[i], bid)
-    u = hcat([bids[:,i] + Gb_i.(bids[:,i], i)./g(bids[:,i], i) for i=1:3]...)
-    f(bid, i) = pdf(kde(u[:,i][.!isnan.(u[:,i])]), bid)
-    Plots.plot(50:250, [f(50:250, i) for i=1:3], xlabel="bid", ylabel="f", label=[1,2,3], title="Independent Private Values: Alternative Method")
+    Plots.plot(v_range, f_est, xlabel="bid", ylabel="f", label=[1,2,3], title="Independent Private Values")
 end
 
 Plots.png(Q2(), "Q1.2")
 Plots.png(Q3(), "Q1.3")
-Plots.png(Q3_alt(), "Q1.3_alt")
